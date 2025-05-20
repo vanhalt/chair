@@ -286,7 +286,7 @@
         const loadingProgress = document.getElementById('loading-progress');
 
         const loader = new THREE.GLTFLoader();
-        loader.load('public/sheen_chair.gltf',
+        loader.load('chair/public/sheen_chair.gltf',
             (gltf) => {
                 originalModel = gltf.scene; // Store the original model
                 scene.add(originalModel);

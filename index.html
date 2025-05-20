@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>glTF Model Viewer: Vanhalts chair</title>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.139.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.139.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.139.0/examples/js/loaders/GLTFLoader.js"></script>
+    <style>
+        body { margin: 0; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 20px;
+            z-index: 10;
+        }
+        #loading-bar {
+            width: 50%;
+            height: 10px;
+            background-color: #ddd;
+            position: relative;
+            margin-top: 20px;
+        }
+        #loading-progress {
+            position: absolute;
+            top: 0;
+            left: 0;
+            height: 10px;
+            background-color: #4CAF50;
+            width: 0%;
+        }
+        #color-controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            display: flex;
+            gap: 10px;
+            z-index: 11; /* Ensure controls are above the canvas */
+        }
+        #color-controls label {
+            color: white;
+            font-size: 16px;
+        }
+        #color-input {
+            width: 80px;
+            height: 30px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #color-input:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.5);
+        }
+        #duplicate-button {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            z-index: 11;
+        }
+        #duplicate-button:hover {
+            background-color: #367c39;
+        }
+        #duplicate-button:focus {
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.5);
+        }
+        .measurement-label {
+            position: absolute;
+            color: white;
+            font-size: 12px;
+            z-index: 12;
+            pointer-events: auto; /* Allow pointer events */
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 3px 6px;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-overlay">
+        Loading model...
+        <div id="loading-bar">
+            <div id="loading-progress"></div>
+        </div>
+    </div>
+    <div id="color-controls">
+        <label for="color-input">Color:</label>
+        <input type="color" id="color-input" value="#ffffff">
+    </div>
+    <button id="duplicate-button">Duplicate Model</button>
+    <canvas id="threeCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('threeCanvas');
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setClearColor(0xaaaaaa); // Light gray background
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5; // Initial camera position
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; // Add damping for smoother interaction
+        controls.dampingFactor = 0.1;
+        controls.screenSpacePanning = true; // Allow panning in screen space
+        controls.minDistance = 1; // Min zoom distance
+        controls.maxDistance = 10; // Max zoom distance
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1); // White light
+        directionalLight.position.set(1, 1, 2);
+        scene.add(directionalLight);
+        const ambientLight = new THREE.AmbientLight(0x404040);  // soft white light
+        scene.add(ambientLight);
+
+        let modelColor = new THREE.Color(0xffffff); // Default color is white
+        let originalModel = null; // Store the original loaded model
+        let shownModels= []; // Array to store cloned models
+        const measurementLabels = []; // Array to store measurement labels
+        let totalMeasurementsLabel = null; // Label for total measurements
+        let modelIsLoaded = false; // Flag to track if the model is loaded
+
+
+        function resizeRendererToDisplaySize(renderer) {
+            const canvas = renderer.domElement;
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            const needResize = canvas.width !== width || canvas.height !== height;
+            if (needResize) {
+                renderer.setSize(width, height, false);
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+            }
+            return needResize;
+        }
+
+        function updateCamera() {
+            if (shownModels.length > 1) {
+                // Calculate bounding box of all models
+                const boundingBox = new THREE.Box3();
+                shownModels.forEach(model => {
+                    boundingBox.expandByObject(model);
+                });
+
+                const center = new THREE.Vector3();
+                boundingBox.getCenter(center);
+                const size = new THREE.Vector3();
+                boundingBox.getSize(size);
+
+                // Calculate the farthest extent in any dimension
+                const maxExtent = Math.max(size.x, size.y, size.z);
+                const fitHeightDistance = maxExtent / (2 * Math.atan(Math.PI * camera.fov / 360));
+                const fitWidthDistance = fitHeightDistance / camera.aspect;
+                const distance = Math.max(fitHeightDistance, fitWidthDistance) * 1.2; // Add a little extra space
+
+                const direction = controls.target.clone()
+                    .sub(camera.position)
+                    .normalize()
+                    .multiplyScalar(distance);
+
+                controls.target.copy(center);
+                camera.position.copy(center).sub(direction);
+                controls.update();
+            }
+        }
+
+        function createMeasurementLabel(text, position) {
+            const label = document.createElement('div');
+            label.className = 'measurement-label';
+            label.textContent = text;
+            document.body.appendChild(label);
+            const labelObj = {
+                element: label,
+                position: position,
+            };
+            measurementLabels.push(labelObj);
+            return labelObj;
+        }
+
+
+        function updateMeasurementLabels() {
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            for (let i = 0; i < measurementLabels.length; i++) {
+                const labelObj = measurementLabels[i];
+                const label = labelObj.element;
+                const position = labelObj.position;
+
+                const vector = new THREE.Vector3(position.x, position.y, position.z);
+                vector.project(camera);
+
+                const x = Math.round((0.5 + vector.x / 2) * width);
+                const y = Math.round((0.5 - vector.y / 2) * height);
+
+                let xOffset = 10;
+                let yOffset = 5;
+                if (position.x > 0) {
+                    xOffset = -label.offsetWidth - 10;
+                }
+                if (position.y < 0) {
+                    yOffset = label.offsetHeight + 5;
+                }
+
+                label.style.left = `${x + xOffset}px`;
+                label.style.top = `${y + yOffset}px`;
+            }
+        }
+
+        function calculateTotalMeasurements() {
+            let totalX = 0;
+            let totalY = 0;
+            let totalZ = 0;
+
+            shownModels.forEach(model => {
+                const boundingBox = new THREE.Box3();
+                boundingBox.expandByObject(model);
+                const size = new THREE.Vector3();
+                boundingBox.getSize(size);
+
+                totalX += size.x;
+                totalY += size.y;
+                totalZ += size.z;
+            });
+
+            return { x: totalX, y: totalY, z: totalZ };
+        }
+
+        function updateDisplayTotalMeasurements() {
+            const total = calculateTotalMeasurements();
+            const text = `Total: ${total.x.toFixed(2)} x ${total.y.toFixed(2)} x ${total.z.toFixed(2)} ft`;
+            if (totalMeasurementsLabel) {
+                totalMeasurementsLabel.element.textContent = text;
+                totalMeasurementsLabel.position.set(0, -2, 0); // update position
+            } else {
+                totalMeasurementsLabel = createMeasurementLabel(text, new THREE.Vector3(0, -2, 0)); // initial position
+            }
+        }
+
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            resizeRendererToDisplaySize(renderer);
+            updateMeasurementLabels();
+            updateDisplayTotalMeasurements();
+            controls.update(); // Update controls (required if damping is enabled)
+
+            // Apply the current color to all models in the scene.
+            scene.traverse(child => {
+                if (child.isMesh && child !== room) { // Exclude the room from color changes
+                    if (Array.isArray(child.material)) {
+                         child.material.forEach(m => {
+                            if (m.isMaterial) {
+                                m.color = modelColor;
+                            }
+                         });
+                    } else if (child.material.isMaterial) {
+                        child.material.color = modelColor;
+                    }
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        // Add this code block to handle loading progress
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingProgress = document.getElementById('loading-progress');
+
+        const loader = new THREE.GLTFLoader();
+        loader.load('public/sheen_chair.gltf',
+            (gltf) => {
+                originalModel = gltf.scene; // Store the original model
+                scene.add(originalModel);
+
+                // Apply initial color to the model.
+                originalModel.traverse(child => {
+                    if (child.isMesh) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(m => {
+                               if (m.isMaterial) {
+                                    m.color = modelColor;
+                               }
+                            });
+                        } else if (child.material.isMaterial) {
+                            child.material.color = modelColor;
+                        }
+                    }
+                });
+                updateCamera(); // Initial camera setup
+
+                // Add a room
+                const roomGeometry = new THREE.BoxGeometry(10, 4, 10);
+                const roomMaterial = new THREE.MeshLambertMaterial({ color: 0xbbbbbb, side: THREE.BackSide }); // Light gray
+                const room = new THREE.Mesh(roomGeometry, roomMaterial);
+                room.position.y = 2; // Half of the room height
+                scene.add(room);
+                window.room = room; //make room accessible globally for debug
+
+                // Add measurement labels
+                const widthLabel = createMeasurementLabel("10 ft", new THREE.Vector3(5, 2, 0));
+                const heightLabel = createMeasurementLabel("4 ft", new THREE.Vector3(0, 2, -5));
+                const depthLabel = createMeasurementLabel("10 ft", new THREE.Vector3(0, 2, 5));
+
+                // Get the bounding box of the model.
+                const modelBoundingBox = new THREE.Box3();
+                originalModel.traverse(child => {
+                    if (child.isMesh) {
+                        child.geometry.computeBoundingBox();
+                        if (child.geometry.boundingBox) {
+                            modelBoundingBox.expandByObject(child);
+                        }
+                    }
+                });
+
+                const modelSize = new THREE.Vector3();
+                modelBoundingBox.getSize(modelSize);
+
+                // Create label for model size.
+                const modelSizeLabel = createMeasurementLabel(
+                    `Model: ${modelSize.x.toFixed(2)} x ${modelSize.y.toFixed(2)} x ${modelSize.z.toFixed(2)} ft`,
+                    new THREE.Vector3(0, modelBoundingBox.max.y + 0.5, 0)  // Position above the model
+                );
+                updateDisplayTotalMeasurements();
+                shownModels.push(originalModel);
+                modelIsLoaded = true; // Set the flag to true after successful load
+
+
+                loadingOverlay.style.display = 'none'; // Hide loading overlay
+                animate();
+            },
+            (xhr) => {
+                if (xhr.lengthComputable) {
+                    const percentComplete = xhr.loaded / xhr.total * 100;
+                    loadingProgress.style.width = `${percentComplete}%`;
+                }
+            },
+            (error) => {
+                console.error('Error loading glTF model:', error);
+                loadingOverlay.textContent = 'Error loading model.'; // Update message
+            }
+        );
+
+        resizeRendererToDisplaySize(renderer);
+        animate();
+
+        // Color Picker
+        const colorInput = document.getElementById('color-input');
+        colorInput.addEventListener('change', (event) => {
+            modelColor.set(event.target.value);
+        });
+
+        // Duplicate Button
+        const duplicateButton = document.getElementById('duplicate-button');
+        duplicateButton.addEventListener('click', () => {
+            if (modelIsLoaded && shownModels.length > 0) { // Check if the model is loaded
+                const clonedModel = originalModel.clone();
+                // Position the cloned model
+                const xOffset = (shownModels.length % 3) * 2; // Spread models horizontally
+                const zOffset = Math.floor(shownModels.length / 3) * 2; // Stack models vertically
+                clonedModel.position.set(xOffset, 0, zOffset);
+                scene.add(clonedModel);
+                shownModels.push(clonedModel); // Store the cloned model for later manipulation
+                 // Apply the current color to the cloned model
+                 clonedModel.traverse(child => {
+                    if (child.isMesh && child !== room) { // Apply color only to the chair, not the room
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(m => {
+                               if (m.isMaterial) {
+                                    m.color = modelColor;
+                               }
+                            });
+                        } else if (child.material.isMaterial) {
+                            child.material.color = modelColor;
+                        }
+                    }
+                });
+                updateCamera(); // Update camera after adding a model
+                updateDisplayTotalMeasurements(); // Update total measurements
+            }
+            console.log(shownModels.length);
+        });
+    </script>
+</body>
+</html>
